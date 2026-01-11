@@ -55,6 +55,11 @@ class SmartLearnerCLI:
         self.learner_id: Optional[UUID] = None
         self.goal_id: Optional[UUID] = None
         self.teaching_mode: str = "socratic"  # 默认苏格拉底式
+        
+        # 初始化长期服务实例（避免每次请求都重新初始化）
+        self._session = self.SessionLocal()
+        self._vector_search = None
+        self._workflow = None
     
     def show_welcome(self):
         """显示欢迎界面"""
@@ -90,7 +95,7 @@ class SmartLearnerCLI:
         """
         console.print("\n[bold cyan]步骤 1: 选择学习者[/bold cyan]")
         
-        email = Prompt.ask("请输入你的邮箱地址")
+        email = Prompt.ask("请输入你的邮箱地址",default="demo@example.com")
         
         # 查询学习者
         with self.SessionLocal() as session:
@@ -164,6 +169,16 @@ class SmartLearnerCLI:
             console.print("[red]未选择学习目标，退出[/red]")
             return False
         
+        # 初始化向量搜索和工作流（仅在会话开始时执行一次）
+        console.print("\n[dim]正在初始化学习环境...[/dim]")
+        try:
+            self._vector_search = create_vector_search_service(self._session)
+            self._workflow = create_teaching_workflow(self._session, self._vector_search)
+            console.print("[dim]✓ 学习环境初始化完成[/dim]")
+        except Exception as e:
+            console.print(f"[red]初始化失败：{str(e)}[/red]")
+            return False
+        
         console.print("\n[bold green]✓ 会话准备就绪！[/bold green]")
         console.print("[dim]你可以开始提问了。输入 /help 查看可用命令。[/dim]\n")
         
@@ -176,46 +191,46 @@ class SmartLearnerCLI:
         Args:
             question: 学习者的问题
         """
-        with self.SessionLocal() as session:
-            # 创建服务
-            vector_search = create_vector_search_service(session)
-            workflow = create_teaching_workflow(session, vector_search)
-            
-            # 执行工作流（到wait_for_response节点）
-            console.print("[dim]正在思考...[/dim]")
-            
-            try:
-                state = workflow.run(
-                    learner_id=self.learner_id,
-                    goal_id=self.goal_id,
-                    tenant_id=self.tenant_id,
-                    question_text=question
-                )
+        # 使用已初始化的工作流实例，避免重复初始化
+        if not self._workflow:
+            console.print("[red]工作流未初始化，请先开始会话[/red]")
+            return
+        
+        # 执行工作流（到wait_for_response节点）
+        console.print("[dim]正在思考...[/dim]")
+        
+        try:
+            state = self._workflow.run(
+                learner_id=self.learner_id,
+                goal_id=self.goal_id,
+                tenant_id=self.tenant_id,
+                question_text=question
+            )
 
-                # 显示解释(若有)
-                self._display_explanation(state)
+            # 显示解释(若有)
+            self._display_explanation(state)
 
-                # 如果生成了理解检查问题,进入交互式评估流程
-                if state.comprehension_questions:
-                    self._display_comprehension_questions(state)
+            # 如果生成了理解检查问题,进入交互式评估流程
+            if state.comprehension_questions:
+                self._display_comprehension_questions(state)
 
-                    learner_response = Prompt.ask("\n[bold cyan]你的回答[/bold cyan]")
+                learner_response = Prompt.ask("\n[bold cyan]你的回答[/bold cyan]")
 
-                    console.print("[dim]正在评估你的回答...[/dim]")
-                    final_state = workflow.continue_with_response(state, learner_response)
+                console.print("[dim]正在评估你的回答...[/dim]")
+                final_state = self._workflow.continue_with_response(state, learner_response)
 
-                    self._display_assessment_feedback(final_state)
-                    self.current_state = final_state
-                else:
-                    # 非交互型请求(如进度/评估/复习等): 直接保存当前状态
-                    if state.assessment_result:
-                        self._display_assessment_feedback(state)
-                    self.current_state = state
+                self._display_assessment_feedback(final_state)
+                self.current_state = final_state
+            else:
+                # 非交互型请求(如进度/评估/复习等): 直接保存当前状态
+                if state.assessment_result:
+                    self._display_assessment_feedback(state)
+                self.current_state = state
 
-            except Exception as e:
-                console.print(f"[red]错误：{str(e)}[/red]")
-                import traceback
-                console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        except Exception as e:
+            console.print(f"[red]错误：{str(e)}[/red]")
+            import traceback
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
     
     def _display_explanation(self, state: TeachingState):
         """显示解释内容"""
@@ -263,103 +278,103 @@ class SmartLearnerCLI:
             console.print("[red]请先开始一个学习会话[/red]")
             return
         
-        with self.SessionLocal() as session:
-            from backend.agents.react.progress_tracker_agent import ProgressTracker
-            tracker = ProgressTracker(session)
+        # 使用已有的session，避免创建新的
+        from backend.agents.react.progress_tracker_agent import ProgressTracker
+        tracker = ProgressTracker(self._session)
+        
+        try:
+            # 基础进度摘要
+            progress = tracker.generate_progress_summary(
+                self.learner_id,
+                self.tenant_id
+            )
             
-            try:
-                # 基础进度摘要
-                progress = tracker.generate_progress_summary(
-                    self.learner_id,
-                    self.tenant_id
-                )
-                
-                # 学习效率分析（阶段二新增）
-                efficiency = tracker.analyze_learning_efficiency(
-                    self.learner_id,
-                    self.tenant_id,
-                    time_range_days=30  # 最近30天
-                )
-                
-                # 复习提醒（阶段二新增）
-                reviews = tracker.get_review_recommendations(
-                    self.learner_id,
-                    self.tenant_id,
-                    max_items=5
-                )
-                
-                # 下一步推荐（阶段二新增）
-                recommendations = tracker.recommend_next_topics(
-                    self.learner_id,
-                    self.tenant_id,
-                    self.goal_id,
-                    max_recommendations=3
-                )
-                
-                console.print("\n[bold cyan]📊 学习进度总览[/bold cyan]\n")
-                
-                # 1. 统计摘要
-                table = Table(show_header=True, header_style="bold magenta")
-                table.add_column("指标")
-                table.add_column("数值")
-                
-                table.add_row("已掌握主题", str(progress["total_mastered_topics"]))
-                table.add_row("高信心主题", str(progress["high_confidence_topics"]))
-                table.add_row("知识缺口", str(progress["total_knowledge_gaps"]))
-                
-                console.print(table)
-                
-                # 2. 学习效率分析（阶段二新增）
-                console.print("\n[bold cyan]⚡ 学习效率分析（最近30天）[/bold cyan]")
-                eff_table = Table(show_header=True, header_style="bold yellow")
-                eff_table.add_column("指标")
-                eff_table.add_column("数值")
-                
-                eff_table.add_row("平均掌握时间", f"{efficiency['average_mastery_time_days']:.1f}天")
-                eff_table.add_row("首次正确率", f"{efficiency['first_time_correct_rate']*100:.0f}%")
-                eff_table.add_row("总学习时长", f"{efficiency['total_learning_hours']:.1f}小时")
-                eff_table.add_row("学习节奏", efficiency['learning_pace'])
-                
-                console.print(eff_table)
-                
-                if efficiency['improvement_suggestions']:
-                    console.print("\n[bold yellow]💡 改进建议：[/bold yellow]")
-                    for suggestion in efficiency['improvement_suggestions']:
-                        console.print(f"  • {suggestion}")
-                
-                # 3. 复习提醒（阶段二新增）
-                if reviews:
-                    console.print("\n[bold orange]📅 需要复习的主题：[/bold orange]")
-                    for review in reviews:
-                        urgency = "🔴" if review['urgency_score'] > 0.7 else "🟡" if review['urgency_score'] > 0.5 else "🟢"
-                        console.print(f"  {urgency} {review['topic_name']}")
-                        console.print(f"     距上次复习：{review['days_since_review']}天 | 建议：{review['recommended_action']}")
-                
-                # 4. 已掌握的主题
-                if progress["mastery_by_confidence_level"]["high"]:
-                    console.print("\n[bold green]🎯 高信心主题：[/bold green]")
-                    for topic in progress["mastery_by_confidence_level"]["high"][:5]:
-                        console.print(f"  • {topic['topic_name']}")
-                
-                # 5. 知识缺口
-                if progress["knowledge_gaps"]:
-                    console.print("\n[bold red]⚠️  知识缺口：[/bold red]")
-                    for gap in progress["knowledge_gaps"][:3]:
-                        console.print(f"  • {gap['topic_name']}: {gap['description']}")
-                
-                # 6. 下一步学习推荐（阶段二新增）
-                if recommendations:
-                    console.print("\n[bold cyan]🎯 推荐学习的主题：[/bold cyan]")
-                    for i, rec in enumerate(recommendations, 1):
-                        console.print(f"\n  {i}. [bold]{rec['topic_name']}[/bold]")
-                        console.print(f"     推荐理由：{rec['recommendation_reason']}")
-                        console.print(f"     难度：{rec['estimated_difficulty']} | 预计时长：{rec['estimated_time_hours']}小时")
-                        console.print(f"     推荐评分：{rec['recommendation_score']:.2f}")
-                
-            except Exception as e:
-                console.print(f"[red]获取进度失败：{str(e)}[/red]")
-                import traceback
-                console.print(f"[dim]{traceback.format_exc()}[/dim]")
+            # 学习效率分析（阶段二新增）
+            efficiency = tracker.analyze_learning_efficiency(
+                self.learner_id,
+                self.tenant_id,
+                time_range_days=30  # 最近30天
+            )
+            
+            # 复习提醒（阶段二新增）
+            reviews = tracker.get_review_recommendations(
+                self.learner_id,
+                self.tenant_id,
+                max_items=5
+            )
+            
+            # 下一步推荐（阶段二新增）
+            recommendations = tracker.recommend_next_topics(
+                self.learner_id,
+                self.tenant_id,
+                self.goal_id,
+                max_recommendations=3
+            )
+            
+            console.print("\n[bold cyan]📊 学习进度总览[/bold cyan]\n")
+            
+            # 1. 统计摘要
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("指标")
+            table.add_column("数值")
+            
+            table.add_row("已掌握主题", str(progress["total_mastered_topics"]))
+            table.add_row("高信心主题", str(progress["high_confidence_topics"]))
+            table.add_row("知识缺口", str(progress["total_knowledge_gaps"]))
+            
+            console.print(table)
+            
+            # 2. 学习效率分析（阶段二新增）
+            console.print("\n[bold cyan]⚡ 学习效率分析（最近30天）[/bold cyan]")
+            eff_table = Table(show_header=True, header_style="bold yellow")
+            eff_table.add_column("指标")
+            eff_table.add_column("数值")
+            
+            eff_table.add_row("平均掌握时间", f"{efficiency['average_mastery_time_days']:.1f}天")
+            eff_table.add_row("首次正确率", f"{efficiency['first_time_correct_rate']*100:.0f}%")
+            eff_table.add_row("总学习时长", f"{efficiency['total_learning_hours']:.1f}小时")
+            eff_table.add_row("学习节奏", efficiency['learning_pace'])
+            
+            console.print(eff_table)
+            
+            if efficiency['improvement_suggestions']:
+                console.print("\n[bold yellow]💡 改进建议：[/bold yellow]")
+                for suggestion in efficiency['improvement_suggestions']:
+                    console.print(f"  • {suggestion}")
+            
+            # 3. 复习提醒（阶段二新增）
+            if reviews:
+                console.print("\n[bold orange]📅 需要复习的主题：[/bold orange]")
+                for review in reviews:
+                    urgency = "🔴" if review['urgency_score'] > 0.7 else "🟡" if review['urgency_score'] > 0.5 else "🟢"
+                    console.print(f"  {urgency} {review['topic_name']}")
+                    console.print(f"     距上次复习：{review['days_since_review']}天 | 建议：{review['recommended_action']}")
+            
+            # 4. 已掌握的主题
+            if progress["mastery_by_confidence_level"]["high"]:
+                console.print("\n[bold green]🎯 高信心主题：[/bold green]")
+                for topic in progress["mastery_by_confidence_level"]["high"][:5]:
+                    console.print(f"  • {topic['topic_name']}")
+            
+            # 5. 知识缺口
+            if progress["knowledge_gaps"]:
+                console.print("\n[bold red]⚠️  知识缺口：[/bold red]")
+                for gap in progress["knowledge_gaps"][:3]:
+                    console.print(f"  • {gap['topic_name']}: {gap['description']}")
+            
+            # 6. 下一步学习推荐（阶段二新增）
+            if recommendations:
+                console.print("\n[bold cyan]🎯 推荐学习的主题：[/bold cyan]")
+                for i, rec in enumerate(recommendations, 1):
+                    console.print(f"\n  {i}. [bold]{rec['topic_name']}[/bold]")
+                    console.print(f"     推荐理由：{rec['recommendation_reason']}")
+                    console.print(f"     难度：{rec['estimated_difficulty']} | 预计时长：{rec['estimated_time_hours']}小时")
+                    console.print(f"     推荐评分：{rec['recommendation_score']:.2f}")
+            
+        except Exception as e:
+            console.print(f"[red]获取进度失败：{str(e)}[/red]")
+            import traceback
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
     
     def select_teaching_mode(self):
         """选择教学模式（阶段二新增）"""
@@ -505,59 +520,71 @@ class SmartLearnerCLI:
         """
         console.print(Panel(Markdown(help_text), title="帮助", border_style="green"))
     
+    def cleanup(self):
+        """清理资源"""
+        if self._session:
+            try:
+                self._session.close()
+            except Exception:
+                pass
+    
     def run(self):
         """运行CLI应用"""
-        self.show_welcome()
-        
-        # 开始会话
-        if not self.start_session():
-            return
-        
-        # 主循环
-        while True:
-            try:
-                question = Prompt.ask("\n[bold green]你的问题[/bold green]")
-                
-                if not question.strip():
-                    continue
-                
-                # 处理特殊命令
-                if question.strip().lower() in ["/end", "/quit", "/exit"]:
-                    console.print("[yellow]结束会话，再见！[/yellow]")
+        try:
+            self.show_welcome()
+            
+            # 开始会话
+            if not self.start_session():
+                return
+            
+            # 主循环
+            while True:
+                try:
+                    question = Prompt.ask("\n[bold green]你的问题[/bold green]")
+                    
+                    if not question.strip():
+                        continue
+                    
+                    # 处理特殊命令
+                    if question.strip().lower() in ["/end", "/quit", "/exit"]:
+                        console.print("[yellow]结束会话，再见！[/yellow]")
+                        break
+                    
+                    elif question.strip().lower() == "/progress":
+                        self.show_progress()
+                        continue
+                    
+                    elif question.strip().lower() == "/mode":
+                        self.select_teaching_mode()
+                        continue
+                    
+                    elif question.strip().lower() == "/mnemonic":
+                        self.show_mnemonic()
+                        continue
+                    
+                    elif question.strip().lower() == "/sources":
+                        self.show_sources()
+                        continue
+                    
+                    elif question.strip().lower() == "/help":
+                        self.show_help()
+                        continue
+                    
+                    # 处理正常问题
+                    self.handle_question(question)
+                    
+                except KeyboardInterrupt:
+                    console.print("\n[yellow]检测到中断，正在退出...[/yellow]")
                     break
-                
-                elif question.strip().lower() == "/progress":
-                    self.show_progress()
-                    continue
-                
-                elif question.strip().lower() == "/mode":
-                    self.select_teaching_mode()
-                    continue
-                
-                elif question.strip().lower() == "/mnemonic":
-                    self.show_mnemonic()
-                    continue
-                
-                elif question.strip().lower() == "/sources":
-                    self.show_sources()
-                    continue
-                
-                elif question.strip().lower() == "/help":
-                    self.show_help()
-                    continue
-                
-                # 处理正常问题
-                self.handle_question(question)
-                
-            except KeyboardInterrupt:
-                console.print("\n[yellow]检测到中断，正在退出...[/yellow]")
-                break
-            except Exception as e:
-                console.print(f"[red]发生错误：{str(e)}[/red]")
-                if Confirm.ask("是否继续？"):
-                    continue
-                else:
-                    break
+                except Exception as e:
+                    console.print(f"[red]发生错误：{str(e)}[/red]")
+                    if Confirm.ask("是否继续？"):
+                        continue
+                    else:
+                        break
+        finally:
+            # 确保资源被正确清理
+            self.cleanup()
 
 
 def main():

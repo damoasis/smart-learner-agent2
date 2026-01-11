@@ -388,7 +388,7 @@ def generate_number_pattern(
 @tool
 def save_mnemonic_device(
     tenant_id: str, concept_id: str, strategy_type: str, 
-    content: Dict, session: Session
+    content: Dict, session: Any
 ) -> str:
     """保存记忆辅助"""
     from uuid import UUID as U

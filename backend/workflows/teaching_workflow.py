@@ -111,7 +111,7 @@ class SocraticTeachingWorkflow:
         graph.add_node("detect_intent", self._detect_intent_node)
 
         # 学习/讲解主路径节点(使用 Socratic / Mnemonic / ContentValidator / Assessor)
-        # graph.add_node("evaluate_baseline", self._evaluate_baseline_node)
+        graph.add_node("evaluate_baseline", self._evaluate_baseline_node)
         # graph.add_node("retrieve_knowledge", self._retrieve_knowledge_node)
         # graph.add_node("validate_content", self._validate_content_node)
         # graph.add_node("generate_explanation", self._generate_explanation_node)
@@ -124,10 +124,10 @@ class SocraticTeachingWorkflow:
         # graph.add_node("record_gap", self._record_gap_node)
 
         # # 其他意图入口节点
-        # graph.add_node("progress_entry", self._progress_entry_node)
-        # graph.add_node("review_entry", self._review_entry_node)
-        # graph.add_node("assessment_entry", self._assessment_entry_node)
-        # graph.add_node("other_entry", self._other_entry_node)
+        graph.add_node("progress_entry", self._progress_entry_node)
+        graph.add_node("review_entry", self._review_entry_node)
+        graph.add_node("assessment_entry", self._assessment_entry_node)
+        graph.add_node("other_entry", self._other_entry_node)
 
         graph.add_node("finalize", self._finalize_node)
 
@@ -150,61 +150,12 @@ class SocraticTeachingWorkflow:
             },
         )
 
-        # --- 学习主路径 ---
-        graph.add_edge("evaluate_baseline", "retrieve_knowledge")
-
-        # 是否需要验证内容
-        graph.add_conditional_edges(
-            "retrieve_knowledge",
-            self._should_validate_content,
-            {
-                "validate": "validate_content",
-                "skip": "generate_explanation",
-            },
-        )
-
-        graph.add_edge("validate_content", "generate_explanation")
-
-        # 是否需要记忆辅助
-        graph.add_conditional_edges(
-            "generate_explanation",
-            self._should_generate_mnemonic,
-            {
-                "generate": "generate_mnemonic",
-                "skip": "create_comprehension_check",
-            },
-        )
-
-        graph.add_edge("generate_mnemonic", "create_comprehension_check")
-        graph.add_edge("create_comprehension_check", "wait_for_response")
-        graph.add_edge("wait_for_response", "assess_understanding")
-
-        # 评估后的路由: 继续/自适应跟进/重试/记录缺口
-        graph.add_conditional_edges(
-            "assess_understanding",
-            self._route_after_assessment,
-            {
-                "continue": "update_progress",
-                "adaptive_followup": "adaptive_followup",
-                "retry": "generate_explanation",
-                "record_gap": "record_gap",
-            },
-        )
-
-        graph.add_edge("adaptive_followup", "create_comprehension_check")
-        graph.add_edge("update_progress", "finalize")
-        graph.add_edge("record_gap", "finalize")
-
-        # 其他入口节点统一在完成后结束
-        graph.add_edge("progress_entry", "finalize")
-        graph.add_edge("review_entry", "finalize")
-        graph.add_edge("assessment_entry", "finalize")
         graph.add_edge("other_entry", "finalize")
         graph.add_edge("finalize", END)
 
 
         compiled_graph = graph.compile()
-        compiled_graph.getgraph().print_ascii()
+        compiled_graph.get_graph().print_ascii()
 
         return compiled_graph
 
@@ -265,6 +216,7 @@ class SocraticTeachingWorkflow:
         "learn", "practice", "progress", "review", "other"
     ]:
         intent = state.intent or "learn"
+        print(f"Intent: {intent}")
         if intent in {"learn", "practice", "progress", "review"}:
             return intent  # 与 add_conditional_edges 的 key 对应
         return "other"
@@ -281,6 +233,9 @@ class SocraticTeachingWorkflow:
             initial_understanding=state.initial_understanding,
         )
         s = result.get("state", {})
+        if(s.get("baseline_level") is None):
+            print(s.get("messages")[-1].content)
+            return {"workflow_stage": "baseline_evaluation_failed"}
         return {
             "baseline_level": s.get("baseline_level"),
             "baseline_assessment": s.get("baseline_assessment"),
