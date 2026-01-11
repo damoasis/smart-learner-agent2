@@ -1,0 +1,55 @@
+[project]
+name = "smart-learner-agent"
+version = "0.1.0"
+description = "智能学习助手Agent - 基于LangGraph的通用学习辅导系统"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=1.0.5",
+    "langchain>=1.2.0",
+    "langchain-openai>=1.1.6",
+    "sqlalchemy>=2.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "asyncpg>=0.29.0",
+    "psycopg2-binary>=2.9.0",
+    "pgvector>=0.2.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.0.0",
+    "typer>=0.9.0",
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "langgraph-checkpoint-postgres>=3.0.2",
+    "langgraph-checkpoint-redis>=0.3.2",
+    "langchain-tavily>=0.2.16",
+    "langchain-community>=0.4.1",
+    "grandalf>=0.8",
+]
+
+[project.scripts]
+smart-learner = "cli.main:main"
+
+[tool.uv]
+index-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend", "cli"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
